@@ -1,10 +1,10 @@
-# diagnosis.py — Claude AI에게 스티커 이미지를 보여주고 진단을 받아오는 로직
-import base64  # 이미지를 API로 보낼 수 있는 문자열 형태로 바꿔주는 도구
-import anthropic
+# diagnosis.py — Gemini AI에게 스티커 이미지를 보여주고 진단을 받아오는 로직
+from google import genai
+from google.genai import types
 
 # AI에게 주는 지시문(프롬프트).
 # OGQ 공식 심사 기준과 인기 요소를 그대로 반영해서, 그 관점으로만 진단하게 한다.
-SYSTEM_PROMPT = """당신은 NAVER OGQ마켓 스티커 심사 기준을 잘 아는 진단 전문가입니다.
+SYSTEM_PROMPT = """당신은 NAVER OGQ마켓 스티커를 100건 이상 심사하고 컨설팅해온 베테랑 진단 전문가입니다.
 크리에이터가 올린 스티커 이미지를 보고, 아래 OGQ 공식 기준에 따라 진단하세요.
 
 [공식 심사 거절 사유]
@@ -19,63 +19,58 @@ SYSTEM_PROMPT = """당신은 NAVER OGQ마켓 스티커 심사 기준을 잘 아�
 - 블로그·댓글 등 일상 대화에서 활용 가능한 내용
 - 쉽게 눈에 띄는 개성 있는 표현
 
+[답변 태도]
+- 대충 훑어보고 말하지 말고, 실제로 이미지를 뜯어본 사람처럼 구체적인 근거를 들어 설명하세요.
+  (예: "글씨가 작다"가 아니라 "캐릭터 대비 텍스트 높이가 낮아 모바일 축소 시 획이 뭉개질 가능성이 있습니다"처럼)
+- 전문 컨설턴트가 클라이언트에게 보고하는 정중하고 격조 있는 어투를 유지하세요. 단정적 지적보다는
+  분석적이고 설득력 있는 문장으로 풀어내세요.
+- 좋은 점도 구체적으로 짚어주세요. 지적만 나열하지 말고, 왜 그것이 판매에 유리한지도 설명하세요.
+- 개선 제안은 뭉뚱그리지 말고 "무엇을, 왜, 어떻게"가 드러나도록 실행 가능한 수준으로 작성하세요.
+
 반드시 아래 형식의 마크다운으로, 한국어 존댓말로 답하세요:
 
 ### 한 줄 총평
-(구매자 입장에서의 첫인상 한 문장)
+(구매자 입장에서의 첫인상을 한 문장으로, 그러나 이미지의 구체적 특징을 근거로 언급)
 
 ### 심사 리스크
-(거절 사유에 해당할 수 있는 항목. 없으면 "발견된 리스크 없음")
+(거절 사유에 해당할 수 있는 항목을 근거와 함께. 없으면 왜 안전한지 근거를 들어 "발견된 리스크 없음"이라고 명시)
 
 ### 가독성 · 다크모드
-(글씨 크기/선명도, 어두운 배경에서의 시인성 평가)
+(글씨 크기/선명도, 어두운 배경에서의 시인성을 이미지 속 구체적 요소를 근거로 평가)
 
 ### 오탈자
 (이미지 속 글자를 읽고 오탈자 여부 확인. 글자가 없으면 "텍스트 없음")
 
+### 디자인 완성도
+(구도, 색감, 캐릭터 표정/포즈의 전달력 등 판매력과 직결되는 디자인 요소를 전문가 시각으로 평가)
+
 ### 판매력을 높이는 개선 제안 3가지
-1. ...
-2. ...
-3. ...
+1. (무엇을 · 왜 · 어떻게 개선할지 구체적으로)
+2. (무엇을 · 왜 · 어떻게 개선할지 구체적으로)
+3. (무엇을 · 왜 · 어떻게 개선할지 구체적으로)
 
 추측이 필요한 부분은 "~로 보입니다"라고 표현하고, 이미지에서 확인할 수 없는 것은 지어내지 마세요."""
 
 
 def diagnose(file_bytes, media_type, api_key):
-    """이미지 1장을 Claude에게 보내고 진단 결과(마크다운 텍스트)를 받아온다.
+    """이미지 1장을 Gemini에게 보내고 진단 결과(마크다운 텍스트)를 받아온다.
 
     file_bytes: 이미지 파일의 원본 데이터
     media_type: 파일 종류 (예: "image/png")
-    api_key: Anthropic API 키
+    api_key: Google AI Studio에서 발급받은 Gemini API 키
     """
-    client = anthropic.Anthropic(api_key=api_key)
+    client = genai.Client(api_key=api_key)
 
-    # 이미지를 base64 문자열로 변환 (API가 요구하는 형식)
-    image_data = base64.standard_b64encode(file_bytes).decode("utf-8")
-
-    response = client.messages.create(
-        model="claude-haiku-4-5",  # 빠르고 저렴한 모델 (이미지 인식 가능)
-        max_tokens=1000,           # 답변 최대 길이
-        system=SYSTEM_PROMPT,
-        messages=[
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "image",
-                        "source": {
-                            "type": "base64",
-                            "media_type": media_type,
-                            "data": image_data,
-                        },
-                    },
-                    {
-                        "type": "text",
-                        "text": "이 스티커를 진단해주세요.",
-                    },
-                ],
-            }
+    response = client.models.generate_content(
+        model="gemini-3.6-flash",  # 최신 모델 (이미지 인식 가능)
+        contents=[
+            types.Part.from_bytes(data=file_bytes, mime_type=media_type),
+            "이 스티커를 진단해주세요.",
         ],
+        config=types.GenerateContentConfig(
+            system_instruction=SYSTEM_PROMPT,
+            max_output_tokens=2000,  # 답변 최대 길이 (더 풍부한 진단을 위해 확장)
+        ),
     )
     # 응답에서 텍스트 부분만 꺼내서 돌려준다
-    return response.content[0].text
+    return response.text
