@@ -135,8 +135,12 @@ if files:
 
     if st.button(f"🧠 업로드한 {len(files)}개 전체 AI 진단 받기", type="primary"):
         api_key = st.secrets.get("GEMINI_API_KEY")
+
+        st.write("Secret 확인:", "GEMINI_API_KEY" in st.secrets)
+        st.write("API Key 길이:", len(api_key) if api_key else 0)
+        
         if not api_key:
-            st.error("API 키가 설정되지 않았어요. .streamlit/secrets.toml을 확인해주세요.")
+            st.error("API 키가 설정되지 않았어요.")
         else:
             progress = st.progress(0, text="AI가 스티커 세트를 살펴보는 중...")
             for i, file_result in enumerate(all_file_results):
