@@ -25,7 +25,7 @@ OGQ Sticker Doctor는 **OGQ 스티커 마켓에 업로드하기 전**, 이미지
 
 ## 🧠 AI 심층 진단
 
-Claude AI를 활용하여 스티커의 품질을 분석합니다.
+Google Geminai AI를 활용하여 스티커의 품질을 분석합니다.
 
 다음 항목들을 자동으로 확인합니다.
 
@@ -87,7 +87,7 @@ assets/
 | ---------------- | ----------------------- |
 | Language         | Python                  |
 | Framework        | Streamlit               |
-| AI               | Anthropic Claude API    |
+| AI               | Google Gemini API    |
 | Image Processing | Pillow                  |
 | State Management | Streamlit Session State |
 
@@ -165,7 +165,7 @@ AI 심층 분석
 * 파일 형식 검사
 * 투명 배경 분석
 * 여백 분석
-* Claude AI 진단
+* Google Gemini AI 진단
 * OCR 오탈자 검사
 * 제출 이미지 구성 확인
 
