@@ -1,76 +1,173 @@
-# diagnosis.py — Gemini AI에게 스티커 이미지를 보여주고 진단을 받아오는 로직
+# diagnosis.py — Gemini AI 스티커 진단
+from __future__ import annotations
+
+import json
+import re
+from typing import Any
+
 from google import genai
 from google.genai import types
 
-# AI에게 주는 지시문(프롬프트).
-# OGQ 공식 심사 기준과 인기 요소를 그대로 반영해서, 그 관점으로만 진단하게 한다.
-SYSTEM_PROMPT = """당신은 NAVER OGQ마켓 스티커를 100건 이상 심사하고 컨설팅해온 베테랑 진단 전문가입니다.
-크리에이터가 올린 스티커 이미지를 보고, 아래 OGQ 공식 기준에 따라 진단하세요.
 
-[공식 심사 거절 사유]
-- 글씨가 지나치게 많거나, 작거나 선명하지 않아 가독성을 해치는 경우
-- 글자에 오탈자가 있는 경우
-- 욕설/폭력/선정성/정치·종교색이 짙은 경우
-- 커뮤니케이션에 도움이 되지 않는 내용
+SYSTEM_PROMPT = """당신은 스티커 콘텐츠를 검토하는 AI 진단 도구입니다.
+공식적으로 공개된 OGQ 제작 가이드와 사용자가 선택한 검사 기준을 바탕으로 분석하세요.
 
-[공식 권장 사항]
-- 다크모드에서 잘 보이도록 흰색 테두리 추가
-- 여백 없이 캐릭터를 최대한 크게
-- 블로그·댓글 등 일상 대화에서 활용 가능한 내용
-- 쉽게 눈에 띄는 개성 있는 표현
-
-[답변 태도]
-- 대충 훑어보고 말하지 말고, 실제로 이미지를 뜯어본 사람처럼 구체적인 근거를 들어 설명하세요.
-  (예: "글씨가 작다"가 아니라 "캐릭터 대비 텍스트 높이가 낮아 모바일 축소 시 획이 뭉개질 가능성이 있습니다"처럼)
-- 전문 컨설턴트가 클라이언트에게 보고하는 정중하고 격조 있는 어투를 유지하세요. 단정적 지적보다는
-  분석적이고 설득력 있는 문장으로 풀어내세요.
-- 좋은 점도 구체적으로 짚어주세요. 지적만 나열하지 말고, 왜 그것이 판매에 유리한지도 설명하세요.
-- 개선 제안은 뭉뚱그리지 말고 "무엇을, 왜, 어떻게"가 드러나도록 실행 가능한 수준으로 작성하세요.
-
-반드시 아래 형식의 마크다운으로, 한국어 존댓말로 답하세요:
-
-### 한 줄 총평
-(구매자 입장에서의 첫인상을 한 문장으로, 그러나 이미지의 구체적 특징을 근거로 언급)
-
-### 심사 리스크
-(거절 사유에 해당할 수 있는 항목을 근거와 함께. 없으면 왜 안전한지 근거를 들어 "발견된 리스크 없음"이라고 명시)
-
-### 가독성 · 다크모드
-(글씨 크기/선명도, 어두운 배경에서의 시인성을 이미지 속 구체적 요소를 근거로 평가)
-
-### 오탈자
-(이미지 속 글자를 읽고 오탈자 여부 확인. 글자가 없으면 "텍스트 없음")
-
-### 디자인 완성도
-(구도, 색감, 캐릭터 표정/포즈의 전달력 등 판매력과 직결되는 디자인 요소를 전문가 시각으로 평가)
-
-### 판매력을 높이는 개선 제안 3가지
-1. (무엇을 · 왜 · 어떻게 개선할지 구체적으로)
-2. (무엇을 · 왜 · 어떻게 개선할지 구체적으로)
-3. (무엇을 · 왜 · 어떻게 개선할지 구체적으로)
-
-추측이 필요한 부분은 "~로 보입니다"라고 표현하고, 이미지에서 확인할 수 없는 것은 지어내지 마세요."""
+중요:
+- OGQ의 비공개 내부 심사 매뉴얼을 알고 있다고 주장하지 마세요.
+- '심사 통과 확률'을 예측하지 마세요.
+- 이미지에서 실제로 확인할 수 없는 사실은 지어내지 마세요.
+- 문제를 발견하면 가능한 한 정확히 이미지 안의 위치를 추정해 bbox로 표시하세요.
+- bbox 좌표는 이미지의 실제 픽셀 좌표가 아니라 0~1000 정규화 좌표입니다.
+- bbox는 [left, top, right, bottom] 순서이고 0~1000 범위입니다.
+- 위치를 특정하기 어려우면 bbox를 빈 배열로 두세요.
+- 수정안은 '무엇을, 왜, 어떻게'가 드러나는 구체적인 수준으로 작성하세요.
+"""
 
 
-def diagnose(file_bytes, media_type, api_key):
-    """이미지 1장을 Gemini에게 보내고 진단 결과(마크다운 텍스트)를 받아온다.
+def _extract_json(text: str) -> dict[str, Any]:
+    text = (text or "").strip()
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        match = re.search(r"\{.*\}", text, re.DOTALL)
+        if match:
+            try:
+                return json.loads(match.group(0))
+            except json.JSONDecodeError:
+                pass
+    return {}
 
-    file_bytes: 이미지 파일의 원본 데이터
-    media_type: 파일 종류 (예: "image/png")
-    api_key: Google AI Studio에서 발급받은 Gemini API 키
-    """
+
+def _normalise_bbox(bbox: Any) -> list[int]:
+    if not isinstance(bbox, list) or len(bbox) != 4:
+        return []
+    try:
+        values = [max(0, min(1000, int(float(v)))) for v in bbox]
+        if values[2] <= values[0] or values[3] <= values[1]:
+            return []
+        return values
+    except (TypeError, ValueError):
+        return []
+
+
+def diagnose_detailed(
+    file_bytes: bytes,
+    media_type: str,
+    api_key: str,
+    selected_criteria: list[str] | None = None,
+    market_context: str = "",
+) -> dict[str, Any]:
+    """한 장의 스티커를 구조화된 진단 결과로 분석한다."""
     client = genai.Client(api_key=api_key)
+    criteria = selected_criteria or [
+        "가독성", "다크모드", "오탈자", "콘텐츠 적합성", "여백", "중복·유사성"
+    ]
+
+    user_prompt = f"""
+이 이미지를 아래 선택된 검사 기준으로 진단하세요.
+
+[선택된 검사 기준]
+{json.dumps(criteria, ensure_ascii=False)}
+
+[시장 비교 자료]
+{market_context or "시장 비교를 실행하지 않았습니다."}
+
+다음 JSON 객체 하나만 반환하세요.
+
+{{
+  "summary": "한 줄 총평",
+  "findings": [
+    {{
+      "severity": "high|medium|low",
+      "area": "문제 영역 이름",
+      "what": "무엇이 문제인지",
+      "why": "왜 문제인지. 시장 비교 자료가 있으면 시장에서 확인된 패턴과 연결",
+      "how": "구체적인 수정 기획안",
+      "bbox": [left, top, right, bottom]
+    }}
+  ],
+  "strengths": ["구체적인 장점 1", "구체적인 장점 2"],
+  "market_note": "시장 비교 자료가 있을 경우 참고용으로 해석한 차이점. 없으면 빈 문자열"
+}}
+
+findings에는 실제로 개선할 가치가 있는 항목만 넣으세요. 문제 위치를 특정하기 어려운 항목은 bbox를 []로 두세요.
+"""
 
     response = client.models.generate_content(
-        model="gemini-3.6-flash",  # 최신 모델 (이미지 인식 가능)
+        model="gemini-3.6-flash",
         contents=[
             types.Part.from_bytes(data=file_bytes, mime_type=media_type),
-            "이 스티커를 진단해주세요.",
+            user_prompt,
         ],
         config=types.GenerateContentConfig(
             system_instruction=SYSTEM_PROMPT,
-            max_output_tokens=2000,  # 답변 최대 길이 (더 풍부한 진단을 위해 확장)
+            response_mime_type="application/json",
+            max_output_tokens=2500,
         ),
     )
-    # 응답에서 텍스트 부분만 꺼내서 돌려준다
-    return response.text
+    data = _extract_json(response.text)
+    if not data:
+        return {
+            "summary": response.text or "AI 진단 결과를 읽지 못했습니다.",
+            "findings": [],
+            "strengths": [],
+            "market_note": "",
+            "raw_text": response.text or "",
+        }
+
+    findings = []
+    for item in data.get("findings", []):
+        if not isinstance(item, dict):
+            continue
+        findings.append(
+            {
+                "severity": item.get("severity", "low"),
+                "area": item.get("area", "검토 항목"),
+                "what": item.get("what", ""),
+                "why": item.get("why", ""),
+                "how": item.get("how", ""),
+                "bbox": _normalise_bbox(item.get("bbox")),
+            }
+        )
+
+    data["findings"] = findings
+    data.setdefault("strengths", [])
+    data.setdefault("summary", "")
+    data.setdefault("market_note", "")
+    data["raw_text"] = response.text or ""
+    return data
+
+
+def render_diagnosis_markdown(diagnosis: dict[str, Any]) -> str:
+    """기존 UI/PDF와도 호환되는 읽기 좋은 마크다운으로 변환."""
+    lines = [f"### 한 줄 총평\n{diagnosis.get('summary', '')}"]
+
+    findings = diagnosis.get("findings", [])
+    lines.append("\n### 발견된 문제")
+    if not findings:
+        lines.append("주요 개선 필요 항목이 발견되지 않았습니다.")
+    else:
+        for idx, f in enumerate(findings, 1):
+            lines.append(
+                f"{idx}. **{f.get('area', '검토 항목')} ({f.get('severity', 'low')})**\n"
+                f"   - 무엇이 문제인가: {f.get('what', '')}\n"
+                f"   - 왜 확인해야 하는가: {f.get('why', '')}\n"
+                f"   - 어떻게 바꿀 것인가: {f.get('how', '')}"
+            )
+
+    lines.append("\n### 장점")
+    strengths = diagnosis.get("strengths", [])
+    if strengths:
+        lines.extend([f"- {s}" for s in strengths])
+    else:
+        lines.append("- 특별히 입력된 장점이 없습니다.")
+
+    if diagnosis.get("market_note"):
+        lines.append(f"\n### 시장 비교 참고\n{diagnosis['market_note']}")
+    return "\n".join(lines)
+
+
+def diagnose(file_bytes, media_type, api_key):
+    """기존 app.py와의 호환을 위한 구형 진단 함수."""
+    detailed = diagnose_detailed(file_bytes, media_type, api_key)
+    return render_diagnosis_markdown(detailed)
