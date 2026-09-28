@@ -5,6 +5,7 @@
 
 import streamlit as st
 from checker import check_image, SPECS
+from preflight_ui import render_card
 from diagnosis import diagnose
 from report_utils import (
     build_priority_todo, compute_score, build_pdf_report,
@@ -116,17 +117,7 @@ if files:
         fail_count = sum(1 for grade, _, _ in results if grade == "fail")
         icon = "❌" if fail_count else "✅"
         with st.expander(f"{icon} {f.name} — 문제 {fail_count}건", expanded=fail_count > 0):
-            col1, col2 = st.columns([1, 2])
-            with col1:
-                st.image(file_bytes)
-            with col2:
-                for grade, item, msg in results:
-                    if grade == "pass":
-                        st.success(f"**{item}** — {msg}")
-                    elif grade == "warn":
-                        st.warning(f"**{item}** — {msg}")
-                    else:
-                        st.error(f"**{item}** — {msg}")
+            render_card(f.name, file_bytes, img_type, results)
 
     # ---------- 2단계: 세트 전체 일괄 AI 진단 ----------
     st.divider()

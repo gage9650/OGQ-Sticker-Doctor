@@ -104,3 +104,69 @@ def check_image(file_bytes, filename):
                         msg + " 공식 가이드는 '여백 없이 최대한 크게'를 권장해요."))
 
     return img_type, results
+
+
+# ======================================================================
+# 위치(bbox)가 있는 추가 진단 — 점수·PDF에는 반영하지 않는다
+# (반영하면 항목 수가 바뀌어 저장된 재검사 히스토리와 점수가 이어지지 않기 때문)
+# ======================================================================
+import numpy as np
+from PIL import ImageFilter
+
+
+def _lum(rgb):
+    c = np.asarray(rgb, float) / 255
+    c = np.where(c <= 0.03928, c / 12.92, ((c + 0.055) / 1.055) ** 2.4)
+    return c @ np.array([0.2126, 0.7152, 0.0722])
+
+
+def _edge_contrast(arr, bg):
+    """그림 외곽 픽셀과 배경색의 명암비(WCAG 공식). 외곽 픽셀이 너무 적으면 None."""
+    mask = arr[..., 3] > 200
+    inner = np.array(Image.fromarray((mask * 255).astype("uint8")).filter(ImageFilter.MinFilter(5))) > 0
+    edge = mask & ~inner
+    if edge.sum() < 20:
+        return None
+    l1, l2 = _lum(arr[..., :3][edge]).mean(), float(_lum(bg))
+    return (max(l1, l2) + 0.05) / (min(l1, l2) + 0.05)
+
+
+def locate_issues(file_bytes, img_type=None):
+    """위치가 있는 추가 진단 목록: [{sev(fail/warn/info), title, rule, why, fix, bbox}]
+    모든 값은 코드가 계산한 실측이며 AI 추정이 아니다."""
+    img = Image.open(io.BytesIO(file_bytes)).convert("RGBA")
+    w, h = img.size
+    arr = np.array(img)
+    a = arr[..., 3]
+    if a.min() == 255:
+        return []  # 투명 정보가 없으면 가리킬 위치가 없다 (기존 검사가 이미 fail 처리)
+    out = []
+
+    # 1) 불투명 모서리 (기존 check_transparency와 같은 기준: 모서리 알파 > 10)
+    cs = max(min(w, h) // 6, 8)
+    corners = {"좌상": ((0, 0), (0, 0, cs, cs)), "우상": ((w - 1, 0), (w - cs, 0, w, cs)),
+               "좌하": ((0, h - 1), (0, h - cs, cs, h)), "우하": ((w - 1, h - 1), (w - cs, h - cs, w, h))}
+    for k, ((x, y), box) in corners.items():
+        if a[y, x] > 10:
+            out.append({"sev": "warn", "title": f"{k} 모서리가 불투명",
+                        "rule": "투명 배경 (모서리 픽셀 알파 10 초과 시 표시)",
+                        "why": f"이 모서리 픽셀의 알파값이 {int(a[y, x])}이라 배경이 남아 있을 수 있어요.",
+                        "fix": "배경을 완전히 제거하고 PNG로 다시 저장하세요.", "bbox": box})
+
+    bb = img.getchannel("A").getbbox()
+    if bb:
+        # 2) 여백 과다 (기존 check_margin과 같은 기준: 그림 영역 ≥ 캔버스의 60%)
+        ratio = (bb[2] - bb[0]) * (bb[3] - bb[1]) / (w * h)
+        if ratio < 0.6:
+            out.append({"sev": "info", "title": "여백이 커요",
+                        "rule": "공식 가이드: 여백 없이 최대한 크게 (내부 기준: 캔버스 면적의 60% 이상)",
+                        "why": f"그림이 캔버스의 {ratio:.0%}만 차지해요. 표시된 박스가 실제 그림 영역이에요.",
+                        "fix": "아래 '여백 없이 최대한 크게' 시안을 써보세요.", "bbox": bb})
+        # 3) 다크모드 외곽 시인성
+        c = _edge_contrast(arr, (30, 30, 30))
+        if c is not None and c < 1.5:
+            out.append({"sev": "warn", "title": "다크모드에서 외곽이 배경과 섞여요",
+                        "rule": "공식 권장: 다크모드용 흰색 테두리 (내부 휴리스틱: 외곽-배경 명암비 1.5:1 이상, 공식 수치 아님)",
+                        "why": f"그림 외곽과 어두운 배경(#1E1E1E)의 명암비가 {c:.2f}:1로 측정됐어요.",
+                        "fix": "아래 '흰색 외곽선' 시안을 써보세요.", "bbox": bb})
+    return out
